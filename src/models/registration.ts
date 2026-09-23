@@ -7,6 +7,8 @@ import {
   Sequelize,
 } from 'sequelize';
 
+// Пара (eventId, userId) уникальна на уровне БД — constraint
+// registrations_event_user_uniq создаётся миграцией 002.
 export class Registration extends Model<
   InferAttributes<Registration>,
   InferCreationAttributes<Registration>

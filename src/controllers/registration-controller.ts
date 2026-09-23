@@ -1,5 +1,9 @@
 import { NextFunction, Request, Response } from 'express';
-import { Event, Registration, User } from '../models';
+import { Registration } from '../models';
+import { registerUserForEvent } from '../services/registration-service';
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function registrationJson(registration: Registration) {
   return {
@@ -17,51 +21,72 @@ export async function registerForEvent(
 ): Promise<void> {
   try {
     const eventId = req.params.eventId as string;
-    const { userId } = req.body as { userId?: string };
+    const { userId } = (req.body ?? {}) as { userId?: unknown };
 
-    const event = await Event.findByPk(eventId);
-    if (!event) {
-      res.status(404).json({
-        error: { code: 'EVENT_NOT_FOUND', message: 'Event was not found' },
-      });
-      return;
-    }
-
-    const registrationsNow = await Registration.count({ where: { eventId } });
-    if (registrationsNow >= event.capacity) {
-      res.status(409).json({
-        error: { code: 'EVENT_FULL', message: 'There are no free places' },
-      });
-      return;
-    }
-
-    const user = await User.findByPk(userId);
-    if (!user) {
-      res.status(404).json({
-        error: { code: 'USER_NOT_FOUND', message: 'User was not found' },
-      });
-      return;
-    }
-
-    const sameRegistration = await Registration.findOne({
-      where: { eventId, userId: user.id },
-    });
-
-    if (sameRegistration) {
-      res.status(200).json({
-        registration: {
-          id: sameRegistration.id,
-          eventId: sameRegistration.eventId,
-          userId: sameRegistration.userId,
-          createdAt: sameRegistration.createdAt,
+    // Без этой проверки некорректный id уходит в PostgreSQL как невалидный
+    // uuid-литерал и возвращается наружу как 500.
+    if (!UUID_PATTERN.test(eventId)) {
+      res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'eventId must be a uuid',
         },
       });
       return;
     }
 
-    const created = await Registration.create({ eventId, userId: user.id });
+    if (typeof userId !== 'string' || !UUID_PATTERN.test(userId)) {
+      res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'userId must be a uuid',
+        },
+      });
+      return;
+    }
 
-    res.status(201).json({ registration: registrationJson(created) });
+    const outcome = await registerUserForEvent(eventId, userId);
+
+    switch (outcome.kind) {
+      case 'created':
+        res
+          .status(201)
+          .json({ registration: registrationJson(outcome.registration) });
+        return;
+
+      case 'existing':
+        res
+          .status(200)
+          .json({ registration: registrationJson(outcome.registration) });
+        return;
+
+      case 'event-not-found':
+        res.status(404).json({
+          error: { code: 'EVENT_NOT_FOUND', message: 'Event was not found' },
+        });
+        return;
+
+      case 'user-not-found':
+        res.status(404).json({
+          error: { code: 'USER_NOT_FOUND', message: 'User was not found' },
+        });
+        return;
+
+      case 'event-cancelled':
+        res.status(409).json({
+          error: {
+            code: 'EVENT_CANCELLED',
+            message: 'Event was cancelled',
+          },
+        });
+        return;
+
+      case 'event-full':
+        res.status(409).json({
+          error: { code: 'EVENT_FULL', message: 'There are no free places' },
+        });
+        return;
+    }
   } catch (error) {
     next(error);
   }
